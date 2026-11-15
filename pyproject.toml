@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtl-coder"
+version = "0.1.0"
+description = "Multi-Agent AI Framework for Hardware - RTL Design, UVM Verification and EDA Flow"
+readme = "README.md"
+requires-python = ">=3.11, <3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "Mahant Arawal", email = "2SD23CS052@sdmcet.ac.in" },
+    { name = "Anushree P Hemadri", email = "2SD23CS016@sdmcet.ac.in" },
+    { name = "Ruthvik Janamatti", email = "2SD23CS081@sdmcet.ac.in" },
+    { name = "Sanvi Rashinkar", email = "2SD23CS090@sdmcet.ac.in" }
+]
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "pydantic>=2.6.0",
+    "httpx>=0.27.0",
+    "pytest>=8.0.0",
+    "ruff>=0.3.0",
+]
+
+[project.optional-dependencies]
+verification = [
+    "cocotb>=1.8.1",
+    "pyuvm>=3.0.0",
+]
+rag = [
+    "chromadb>=0.4.22",
+    "sentence-transformers>=2.5.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agents*", "orchestrator*", "gateway*", "eda*", "schemas*", "benchmarks*", "evaluation*", "rag*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E501"]
