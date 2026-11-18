@@ -113,7 +113,7 @@ runs/<run_id>/
 ```powershell
 python cli.py status
 ```
-Audits local Ollama LLM models (`qwen2.5-coder:7b-instruct-q4_K_M`, `qwen2.5-coder:1.5b`) and Ubuntu WSL EDA suite (`iverilog`, `verilator`, `yosys`, `gtkwave`).
+Audits local Ollama LLM models (`qwen2.5-coder:3b`, `qwen2.5-coder:1.5b`) and Ubuntu WSL EDA suite (`iverilog`, `verilator`, `yosys`, `gtkwave`).
 
 ### 2. Launch Interactive Web Dashboard
 ```powershell

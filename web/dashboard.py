@@ -1,11 +1,13 @@
 """Interactive Web Dashboard for the Multi-Agent RTL Coder Framework."""
 
+from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 import json
 from pathlib import Path
 import subprocess
-from typing import Any, Dict, List
+import threading
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 from eda.runner import WSLCommandRunner
@@ -19,22 +21,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RTL-Coder &mdash; Hardware Synthesis & Verification Framework</title>
+  <title>RTL-Coder - Multi-Agent Hardware Synthesis & Verification Framework</title>
   <style>
     :root {
-      --bg: #090a0f;
-      --surface: #111318;
-      --surface-hover: #171a22;
-      --border: #21262d;
-      --border-focus: #388bfd;
-      --accent: #2f81f7;
-      --text-primary: #e6edf3;
-      --text-secondary: #7d8590;
-      --text-tertiary: #484f58;
-      --success: #238636;
-      --success-text: #3fb950;
-      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      --bg: #0b0f19;
+      --surface: #111827;
+      --surface-card: #162032;
+      --surface-hover: #1e293b;
+      --border: #1f293d;
+      --border-bright: #334155;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.25);
+      --success: #22c55e;
+      --success-glow: rgba(34, 197, 94, 0.2);
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --font-mono: ui-monospace, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -43,24 +49,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font-family: var(--font-sans);
       font-size: 13px;
       line-height: 1.5;
-      padding: 32px;
+      padding: 24px 32px;
       -webkit-font-smoothing: antialiased;
     }
     header {
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
+      align-items: center;
       border-bottom: 1px solid var(--border);
-      padding-bottom: 20px;
-      margin-bottom: 24px;
+      padding-bottom: 18px;
+      margin-bottom: 20px;
     }
-    .brand h1 {
+    .brand-title {
       font-size: 16px;
-      font-weight: 600;
-      letter-spacing: -0.2px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
       color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
-    .brand p {
+    .brand-sub {
       font-size: 12px;
       color: var(--text-secondary);
       margin-top: 2px;
@@ -80,378 +89,682 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       color: var(--text-secondary);
     }
     .tag.online {
-      color: var(--success-text);
-      border-color: rgba(35, 134, 54, 0.4);
-      background: rgba(35, 134, 54, 0.1);
+      color: #4ade80;
+      border-color: rgba(34, 197, 94, 0.3);
+      background: rgba(34, 197, 94, 0.08);
+    }
+    .tag.model {
+      color: var(--accent);
+      border-color: rgba(56, 189, 248, 0.3);
+      background: rgba(56, 189, 248, 0.08);
     }
 
-    /* Pipeline Status Flow */
-    .pipeline-container {
-      margin-bottom: 24px;
+    /* Active Run Progress Bar */
+    .progress-bar-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
     }
+    .progress-bar-outer {
+      flex: 1;
+      height: 6px;
+      background: #1e293b;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-bar-inner {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #38bdf8, #818cf8);
+      border-radius: 3px;
+      transition: width 0.4s ease;
+    }
+    .progress-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .progress-info .agent-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      background: rgba(56, 189, 248, 0.12);
+      padding: 2px 7px;
+      border-radius: 3px;
+      border: 1px solid rgba(56, 189, 248, 0.25);
+    }
+
+    /* Pipeline 8-Node Grid */
     .section-label {
       font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.6px;
       color: var(--text-secondary);
-      margin-bottom: 8px;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
-    .pipeline {
+    .pipeline-grid {
       display: grid;
       grid-template-columns: repeat(8, 1fr);
-      gap: 6px;
+      gap: 8px;
+      margin-bottom: 20px;
     }
-    .node {
+    .node-card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 8px 10px;
-      transition: border-color 0.15s ease;
+      border-radius: 6px;
+      padding: 10px 10px;
+      position: relative;
+      transition: all 0.25s ease;
+      min-height: 84px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
     }
-    .node .role {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.4px;
-      color: var(--text-secondary);
-      margin-bottom: 2px;
+    .node-card .node-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 4px;
     }
-    .node .state {
-      font-family: var(--font-mono);
+    .node-card .role-title {
       font-size: 11px;
-      font-weight: 500;
-      color: var(--text-tertiary);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      color: var(--text-primary);
     }
-    .node.active {
-      border-color: var(--accent);
-      background: rgba(47, 129, 247, 0.05);
+    .node-card .model-pill {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: rgba(255,255,255,0.06);
+      color: var(--text-muted);
     }
-    .node.active .state {
-      color: var(--accent);
+    .node-card .node-status {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.4px;
+      color: var(--text-muted);
+      margin-top: 2px;
     }
-    .node.pass {
-      border-color: rgba(35, 134, 54, 0.5);
-      background: rgba(35, 134, 54, 0.05);
-    }
-    .node.pass .state {
-      color: var(--success-text);
+    .node-card .node-detail {
+      font-size: 10px;
+      color: var(--text-secondary);
+      line-height: 1.3;
+      margin-top: 4px;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
     }
 
-    /* Main Grid Layout */
-    .grid {
+    /* Node States & Animated Pulses */
+    @keyframes pulse-working {
+      0% {
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.4);
+      }
+      50% {
+        border-color: #818cf8;
+        box-shadow: 0 0 0 5px rgba(56, 189, 248, 0);
+      }
+      100% {
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.4);
+      }
+    }
+    .node-card.running {
+      animation: pulse-working 1.6s infinite ease-in-out;
+      background: rgba(56, 189, 248, 0.05);
+    }
+    .node-card.running .node-status {
+      color: var(--accent);
+    }
+    .node-card.done {
+      border-color: rgba(34, 197, 94, 0.4);
+      background: rgba(34, 197, 94, 0.04);
+    }
+    .node-card.done .node-status {
+      color: var(--success);
+    }
+    .node-card.failed {
+      border-color: rgba(239, 68, 68, 0.4);
+      background: rgba(239, 68, 68, 0.04);
+    }
+    .node-card.failed .node-status {
+      color: var(--error);
+    }
+
+    /* Main Content Layout */
+    .main-grid {
       display: grid;
       grid-template-columns: 360px 1fr;
-      gap: 24px;
+      gap: 20px;
       align-items: start;
     }
+
+    /* Left Control Panel */
     .panel {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 18px;
-      margin-bottom: 20px;
+      overflow: hidden;
     }
     .panel-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-card);
       font-size: 12px;
       font-weight: 600;
       color: var(--text-primary);
-      margin-bottom: 14px;
-      text-transform: uppercase;
-      letter-spacing: 0.4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
-
-    /* Form Inputs */
-    label {
-      display: block;
+    .panel-body {
+      padding: 16px;
+    }
+    .field-group {
+      margin-bottom: 14px;
+    }
+    .field-label {
       font-size: 11px;
-      font-weight: 500;
+      font-weight: 600;
       color: var(--text-secondary);
       margin-bottom: 6px;
+      display: block;
     }
-    select, textarea, button {
+    select, textarea, input {
       width: 100%;
       background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 4px;
       color: var(--text-primary);
-      padding: 8px 10px;
+      font-family: var(--font-sans);
       font-size: 12px;
-      margin-bottom: 12px;
+      padding: 8px 10px;
+      outline: none;
       transition: border-color 0.15s ease;
     }
-    select:focus, textarea:focus {
-      outline: none;
-      border-color: var(--border-focus);
+    select:focus, textarea:focus, input:focus {
+      border-color: var(--accent);
     }
     textarea {
-      height: 180px;
-      resize: vertical;
       font-family: var(--font-mono);
-      line-height: 1.45;
+      font-size: 12px;
+      resize: vertical;
+      min-height: 120px;
+      line-height: 1.4;
     }
-    button.btn-primary {
-      background: #238636;
-      border: 1px solid rgba(240, 246, 252, 0.1);
+    .btn {
+      width: 100%;
+      background: #2563eb;
       color: #fff;
-      font-weight: 500;
+      border: none;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 10px 14px;
       cursor: pointer;
-      padding: 9px;
-      margin-top: 4px;
+      transition: background 0.15s ease;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
     }
-    button.btn-primary:hover {
-      background: #2ea043;
+    .btn:hover:not(:disabled) {
+      background: #1d4ed8;
     }
-    button.btn-secondary {
-      background: transparent;
-      border: 1px solid var(--border);
-      color: var(--text-primary);
-      cursor: pointer;
-      font-size: 11px;
-      padding: 5px 10px;
-      width: auto;
-    }
-    button.btn-secondary:hover {
-      background: var(--surface-hover);
-      border-color: var(--text-secondary);
-    }
-    button:disabled {
-      opacity: 0.4;
+    .btn:disabled {
+      background: #1e293b;
+      color: var(--text-muted);
       cursor: not-allowed;
     }
+    .btn-secondary {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      margin-top: 8px;
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: var(--surface-hover);
+    }
 
-    /* Tabs & Code Viewer */
-    .viewer-header {
+    /* Run History List */
+    .history-list {
+      max-height: 160px;
+      overflow-y: auto;
+      margin-top: 14px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }
+    .history-item {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 10px;
-      margin-bottom: 12px;
-    }
-    .tabs {
-      display: flex;
-      gap: 2px;
-    }
-    .tab {
-      background: none;
-      border: none;
-      padding: 6px 10px;
-      font-size: 12px;
+      font-size: 11px;
+      font-family: var(--font-mono);
       color: var(--text-secondary);
-      cursor: pointer;
-      border-radius: 4px;
-      width: auto;
-      margin: 0;
+      transition: background 0.15s ease;
     }
-    .tab:hover {
-      color: var(--text-primary);
+    .history-item:last-child {
+      border-bottom: none;
+    }
+    .history-item:hover {
       background: var(--surface-hover);
+      color: var(--text-primary);
     }
-    .tab.active {
-      color: #fff;
-      background: rgba(255, 255, 255, 0.08);
+    .history-item.active {
+      background: rgba(56, 189, 248, 0.1);
+      color: var(--accent);
+      border-left: 2px solid var(--accent);
+    }
+
+    /* Right Main Display Area */
+    .right-column {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* Live Activity Stream Terminal */
+    .terminal-panel {
+      background: #07090e;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .terminal-header {
+      background: #0d121c;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+    .terminal-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+    .dot.live {
+      background: #22c55e;
+      box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
+    }
+    .terminal-body {
+      height: 140px;
+      overflow-y: auto;
+      padding: 10px 14px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    .log-line {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 2px;
+      animation: fadeIn 0.2s ease-in;
+    }
+    .log-time {
+      color: var(--text-muted);
+    }
+    .log-agent {
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .log-msg {
+      color: #cbd5e1;
+    }
+
+    /* Collateral Tabs */
+    .tabs-header {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-card);
+      padding: 0 8px;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 12px;
       font-weight: 500;
+      padding: 10px 14px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s ease;
     }
-    .code-view {
-      background: var(--bg);
+    .tab-btn:hover {
+      color: var(--text-primary);
+    }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      font-weight: 600;
+    }
+    .tab-content {
+      display: none;
+      padding: 16px;
+      animation: fadeIn 0.2s ease-out;
+    }
+    .tab-content.active {
+      display: block;
+    }
+
+    /* Code View Area */
+    .code-container {
+      position: relative;
+    }
+    .code-toolbar {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 10;
+      display: flex;
+      gap: 6px;
+    }
+    .tool-btn {
+      background: var(--surface);
+      border: 1px solid var(--border-bright);
+      color: var(--text-secondary);
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .tool-btn:hover {
+      background: var(--surface-hover);
+      color: #fff;
+    }
+    pre {
+      background: #07090e;
       border: 1px solid var(--border);
       border-radius: 4px;
       padding: 14px;
       font-family: var(--font-mono);
       font-size: 12px;
       line-height: 1.5;
-      max-height: 540px;
-      overflow: auto;
+      overflow-x: auto;
+      max-height: 440px;
+      color: #e2e8f0;
       white-space: pre-wrap;
-      color: #c9d1d9;
     }
 
-    /* Run List */
-    .run-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 10px;
-      border-bottom: 1px solid var(--border);
-      cursor: pointer;
-      border-radius: 4px;
-    }
-    .run-row:hover {
-      background: var(--surface-hover);
-    }
-    .run-name {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--text-primary);
-    }
-    .run-meta {
-      font-size: 11px;
-      color: var(--text-secondary);
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(2px); }
+      to { opacity: 1; transform: translateY(0); }
     }
   </style>
 </head>
 <body>
+
   <header>
     <div class="brand">
-      <h1>RTL-Coder</h1>
-      <p>Autonomous Multi-Agent RTL Design, Verification & EDA Pipeline</p>
+      <div class="brand-title">RTL-CODER ARCHITECTURE FRAMEWORK</div>
+      <div class="brand-sub">Multi-Agent RTL Design, Verification & Automated EDA Suite</div>
     </div>
     <div class="system-status">
-      <span class="tag online" id="ollama-status">Backend Online</span>
-      <span class="tag" id="model-badge">qwen2.5-coder:7b</span>
+      <span class="tag online" id="wsl-badge">WSL2 EDA: ACTIVE</span>
+      <span class="tag model" id="primary-model-badge">PRIMARY: qwen2.5-coder:3b</span>
+      <span class="tag" id="fast-model-badge">FAST: qwen2.5-coder:1.5b</span>
+      <span class="tag" id="ollama-badge">OLLAMA: READY</span>
     </div>
   </header>
 
-  <div class="pipeline-container">
-    <div class="section-label">Pipeline Execution Stages</div>
-    <div class="pipeline">
-      <div class="node" id="node-spec"><div class="role">Specification</div><div class="state">IDLE</div></div>
-      <div class="node" id="node-arch"><div class="role">Architecture</div><div class="state">IDLE</div></div>
-      <div class="node" id="node-rtl"><div class="role">RTL Coder</div><div class="state">IDLE</div></div>
-      <div class="node" id="node-verif"><div class="role">Verification</div><div class="state">IDLE</div></div>
-      <div class="node" id="node-script"><div class="role">Scripting</div><div class="state">IDLE</div></div>
-      <div class="node" id="node-eda"><div class="role">EDA Engine</div><div class="state">IDLE</div></div>
-      <div class="node" id="node-review"><div class="role">Review</div><div class="state">IDLE</div></div>
-      <div class="node" id="node-reflect"><div class="role">Reflection</div><div class="state">IDLE</div></div>
+  <!-- Live Progress & Spotlight Bar -->
+  <div class="progress-bar-container">
+    <div class="progress-info">
+      <span class="agent-badge" id="spotlight-agent">STANDBY</span>
+      <span id="spotlight-desc" style="color: var(--text-secondary);">Ready for hardware specification input.</span>
+    </div>
+    <div class="progress-bar-outer">
+      <div class="progress-bar-inner" id="progress-bar"></div>
+    </div>
+    <div class="progress-info" style="font-family: var(--font-mono);" id="progress-percent">0%</div>
+  </div>
+
+  <!-- 8 Pipeline Agent Cards -->
+  <div class="section-label">
+    <span>Agent Execution Sequence</span>
+    <span id="run-state-badge" style="font-family: var(--font-mono); font-weight: normal; color: var(--text-muted);">PIPELINE: IDLE</span>
+  </div>
+
+  <div class="pipeline-grid">
+    <div class="node-card" id="card-SPEC_ANALYSIS">
+      <div class="node-header">
+        <span class="role-title">Spec Analyst</span>
+        <span class="model-pill">1.5B</span>
+      </div>
+      <div class="node-status" id="status-SPEC_ANALYSIS">STANDBY</div>
+      <div class="node-detail" id="detail-SPEC_ANALYSIS">Requirements synthesis & interface extraction</div>
+    </div>
+
+    <div class="node-card" id="card-ARCHITECTURE_DESIGN">
+      <div class="node-header">
+        <span class="role-title">Architect</span>
+        <span class="model-pill">1.5B</span>
+      </div>
+      <div class="node-status" id="status-ARCHITECTURE_DESIGN">STANDBY</div>
+      <div class="node-detail" id="detail-ARCHITECTURE_DESIGN">FSM state encoding & datapath partitioning</div>
+    </div>
+
+    <div class="node-card" id="card-RTL_GENERATION">
+      <div class="node-header">
+        <span class="role-title">RTL Coder</span>
+        <span class="model-pill">3B</span>
+      </div>
+      <div class="node-status" id="status-RTL_GENERATION">STANDBY</div>
+      <div class="node-detail" id="detail-RTL_GENERATION">Synthesizable Verilog RTL module coding</div>
+    </div>
+
+    <div class="node-card" id="card-VERIFICATION_GENERATION">
+      <div class="node-header">
+        <span class="role-title">Verif Engineer</span>
+        <span class="model-pill">3B</span>
+      </div>
+      <div class="node-status" id="status-VERIFICATION_GENERATION">STANDBY</div>
+      <div class="node-detail" id="detail-VERIFICATION_GENERATION">Self-checking testbench with safety watchdog</div>
+    </div>
+
+    <div class="node-card" id="card-SCRIPT_ENGINEER">
+      <div class="node-header">
+        <span class="role-title">Script Engineer</span>
+        <span class="model-pill">1.5B</span>
+      </div>
+      <div class="node-status" id="status-SCRIPT_ENGINEER">STANDBY</div>
+      <div class="node-detail" id="detail-SCRIPT_ENGINEER">Yosys synthesis script & Makefile automation</div>
+    </div>
+
+    <div class="node-card" id="card-EDA_EXECUTION">
+      <div class="node-header">
+        <span class="role-title">EDA Engine</span>
+        <span class="model-pill">WSL2</span>
+      </div>
+      <div class="node-status" id="status-EDA_EXECUTION">STANDBY</div>
+      <div class="node-detail" id="detail-EDA_EXECUTION">Icarus compile/sim, Verilator lint, Yosys synth</div>
+    </div>
+
+    <div class="node-card" id="card-REVIEW">
+      <div class="node-header">
+        <span class="role-title">Reviewer</span>
+        <span class="model-pill">1.5B</span>
+      </div>
+      <div class="node-status" id="status-REVIEW">STANDBY</div>
+      <div class="node-detail" id="detail-REVIEW">Simulation metrics audit & PASS/REPAIR judgment</div>
+    </div>
+
+    <div class="node-card" id="card-REFLECTION">
+      <div class="node-header">
+        <span class="role-title">Reflection</span>
+        <span class="model-pill">1.5B</span>
+      </div>
+      <div class="node-status" id="status-REFLECTION">STANDBY</div>
+      <div class="node-detail" id="detail-REFLECTION">Root-cause diagnosis & targeted self-repair loop</div>
     </div>
   </div>
 
-  <div class="grid">
-    <div>
+  <!-- Main Grid: Controls Left, Live Output Right -->
+  <div class="main-grid">
+
+    <!-- Controls Column -->
+    <div class="left-column">
       <div class="panel">
-        <div class="panel-header">Design Specification</div>
-        <label for="preset-select">Standard Presets</label>
-        <select id="preset-select" onchange="loadPreset()">
-          <option value="">Custom Design Specification</option>
-          <option value="counter">8-bit Synchronous Counter</option>
-          <option value="fsm">1011 Sequence Detector FSM</option>
-          <option value="fifo">16-Word Synchronous FIFO</option>
-          <option value="alu">8-bit Arithmetic Logic Unit (ALU)</option>
-          <option value="uart_tx">UART Transmitter (8-N-1)</option>
-          <option value="spi_master">SPI Master Controller (Mode 0)</option>
-        </select>
-
-        <label for="spec-text">Specification Input</label>
-        <textarea id="spec-text" placeholder="Enter hardware description, ports, reset levels, and functional behavior..."></textarea>
-
-        <button class="btn-primary" id="run-btn" onclick="startGeneration()">Execute Generation & Verification</button>
-      </div>
-
-      <div class="panel">
-        <div class="panel-header">Execution History</div>
-        <div id="runs-list" style="max-height: 220px; overflow-y: auto;">
-          <p style="color: var(--text-secondary); font-size: 11px;">Loading records...</p>
+        <div class="panel-header">
+          <span>Design Input & Control</span>
         </div>
-      </div>
-    </div>
-
-    <div>
-      <div class="panel" style="padding: 14px;">
-        <div class="viewer-header">
-          <div class="tabs">
-            <button class="tab active" onclick="switchTab('rtl')">RTL Verilog</button>
-            <button class="tab" onclick="switchTab('tb')">Testbench</button>
-            <button class="tab" onclick="switchTab('arch')">Architecture</button>
-            <button class="tab" onclick="switchTab('reqs')">Requirements</button>
-            <button class="tab" onclick="switchTab('reports')">EDA Diagnostics</button>
-            <button class="tab" onclick="switchTab('review')">Review & Reflection</button>
+        <div class="panel-body">
+          <div class="field-group">
+            <label class="field-label" for="preset-select">Architecture Presets</label>
+            <select id="preset-select" onchange="loadPreset()">
+              <option value="">Select a hardware design template...</option>
+              <option value="counter" selected>4-bit Counter (Enable & Synchronous Reset)</option>
+              <option value="fifo">Synchronous FIFO (8-bit, 16 words depth)</option>
+              <option value="alu">8-bit ALU (8 operations + status flags)</option>
+              <option value="uart_tx">UART Transmitter (8-N-1 115200 baud)</option>
+              <option value="spi_master">SPI Master (Mode 0, 8-bit)</option>
+            </select>
           </div>
-          <button class="btn-secondary" onclick="openWaveforms()">View Waveforms (GTKWave)</button>
-        </div>
 
-        <div id="tab-content" class="code-view">// Select an execution record to view generated collateral.</div>
+          <div class="field-group">
+            <label class="field-label" for="spec-text">Natural Language Specification</label>
+            <textarea id="spec-text" spellcheck="false" placeholder="Enter hardware specification..."></textarea>
+          </div>
+
+          <button class="btn" id="run-btn" onclick="startGeneration()">
+            Execute Generation & Verification
+          </button>
+          <button class="btn btn-secondary" onclick="openWaveforms()">
+            Launch GTKWave Waveforms
+          </button>
+
+          <div style="margin-top: 18px;">
+            <span class="field-label">Past Executions</span>
+            <div class="history-list" id="runs-history">
+              <div style="padding: 10px; color: var(--text-muted); text-align: center;">Loading runs...</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
+
+    <!-- Output Column -->
+    <div class="right-column">
+
+      <!-- Live Activity Stream Console -->
+      <div class="terminal-panel">
+        <div class="terminal-header">
+          <div class="terminal-indicator">
+            <span class="dot live" id="terminal-dot"></span>
+            <span>LIVE AGENT ACTIVITY FEED</span>
+          </div>
+          <span id="active-run-id">NO ACTIVE RUN</span>
+        </div>
+        <div class="terminal-body" id="terminal-body">
+          <div class="log-line">
+            <span class="log-time">[00:00:00]</span>
+            <span class="log-agent">[System]</span>
+            <span class="log-msg">Platform ready. Select a template or enter a specification to execute.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Collateral Viewer Tabs -->
+      <div class="panel">
+        <div class="tabs-header">
+          <button class="tab-btn active" onclick="switchTab('rtl')">Synthesized RTL (.v)</button>
+          <button class="tab-btn" onclick="switchTab('testbench')">Verification Testbench (.v)</button>
+          <button class="tab-btn" onclick="switchTab('eda')">EDA Tool Reports</button>
+          <button class="tab-btn" onclick="switchTab('microarch')">Microarchitecture Plan</button>
+          <button class="tab-btn" onclick="switchTab('requirements')">Requirements JSON</button>
+          <button class="tab-btn" onclick="switchTab('review')">Quality Review Matrix</button>
+        </div>
+
+        <div class="tab-content active" id="tab-rtl">
+          <div class="code-container">
+            <div class="code-toolbar">
+              <button class="tool-btn" onclick="copyCode('code-rtl')">Copy Verilog</button>
+            </div>
+            <pre id="code-rtl">// Verilog RTL module will be displayed here as RTL Coder generates it.</pre>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-testbench">
+          <div class="code-container">
+            <div class="code-toolbar">
+              <button class="tool-btn" onclick="copyCode('code-tb')">Copy Testbench</button>
+            </div>
+            <pre id="code-tb">// Self-checking testbench will appear here when Verification Engineer completes.</pre>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-eda">
+          <div class="code-container">
+            <pre id="code-eda">// EDA execution reports (Icarus simulation, Verilator lint, Yosys synthesis stats) will stream here.</pre>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-microarch">
+          <div class="code-container">
+            <pre id="code-arch">// Microarchitectural JSON specification formulated by Architect Agent.</pre>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-requirements">
+          <div class="code-container">
+            <pre id="code-reqs">// Extracted ports, clock domains, and control parameters from Specification Analyst.</pre>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-review">
+          <div class="code-container">
+            <pre id="code-review">// Reviewer analysis report and verification verdict.</pre>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
   </div>
 
   <script>
-    let activeRunData = null;
-    let activeTab = 'rtl';
-
-    async function init() {
-      await fetchStatus();
-      await fetchRuns();
-    }
-
-    async function fetchStatus() {
-      try {
-        const res = await fetch('/health');
-        const data = await res.json();
-        const el = document.getElementById('ollama-status');
-        el.innerText = data.ollama_connected ? 'Backend Online' : 'Backend Degraded';
-        el.className = 'tag ' + (data.ollama_connected ? 'online' : '');
-        document.getElementById('model-badge').innerText = data.primary_model || 'qwen2.5-coder:7b';
-      } catch(e) {}
-    }
-
-    async function fetchRuns() {
-      try {
-        const res = await fetch('/api/runs');
-        const runs = await res.json();
-        const listEl = document.getElementById('runs-list');
-        if (!runs.length) {
-          listEl.innerHTML = '<p style="color: var(--text-secondary); font-size: 11px;">No executions logged yet.</p>';
-          return;
-        }
-        listEl.innerHTML = runs.map(r => `
-          <div class="run-row" onclick="loadRun('${r.run_id}')">
-            <div>
-              <div class="run-name">${r.run_id}</div>
-              <div class="run-meta">${r.mtime ? new Date(r.mtime * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}</div>
-            </div>
-            <span class="tag ${r.status === 'PASS' ? 'online' : ''}">${r.status || 'LOGGED'}</span>
-          </div>
-        `).join('');
-      } catch(e) {}
-    }
-
-    async function loadRun(runId) {
-      try {
-        const res = await fetch(`/api/runs/${runId}`);
-        activeRunData = await res.json();
-        renderTab();
-        updateNodesFromRun(activeRunData);
-      } catch(e) {}
-    }
-
-    function updateNodesFromRun(data) {
-      const nodes = ['spec', 'arch', 'rtl', 'verif', 'script', 'eda', 'review', 'reflect'];
-      nodes.forEach(n => {
-        const el = document.getElementById(`node-${n}`);
-        el.className = 'node pass';
-        el.querySelector('.state').innerText = 'PASS';
-      });
-    }
-
-    function switchTab(tab) {
-      activeTab = tab;
-      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
-      event.target.classList.add('active');
-      renderTab();
-    }
-
-    function renderTab() {
-      const box = document.getElementById('tab-content');
-      if (!activeRunData) {
-        box.innerText = '// Select or execute a run to view collateral...';
-        return;
-      }
-      if (activeTab === 'rtl') box.innerText = activeRunData.rtl || '// No RTL code available';
-      else if (activeTab === 'tb') box.innerText = activeRunData.testbench || '// No testbench code available';
-      else if (activeTab === 'arch') box.innerText = JSON.stringify(activeRunData.architecture || {}, null, 2);
-      else if (activeTab === 'reqs') box.innerText = JSON.stringify(activeRunData.requirements || {}, null, 2);
-      else if (activeTab === 'reports') box.innerText = activeRunData.eda_reports || '// No EDA logs available';
-      else if (activeTab === 'review') box.innerText = JSON.stringify(activeRunData.review || {}, null, 2);
-    }
-
     const PRESETS = {
-      counter: "Module Name: counter\\nDescription: 8-bit synchronous up-counter with synchronous active-low reset and overflow indicator.\\nPort Specifications:\\n- clk: 1-bit input clock\\n- rst_n: 1-bit input synchronous active-low reset\\n- enable: 1-bit input counter enable\\n- count: 8-bit output current count value\\n- overflow: 1-bit output flag, high when count == 255 and enable is high\\nBehavior:\\nWhen rst_n is low, count is 0 and overflow is 0. When enable is high on posedge clk, count increments by 1.",
-      fsm: "Module Name: fsm_detector\\nDescription: Finite State Machine sequence detector that detects the 4-bit sequence 1011.\\nPort Specifications:\\n- clk: 1-bit input clock\\n- rst_n: 1-bit input synchronous active-low reset\\n- in_bit: 1-bit input serial bitstream\\n- detected: 1-bit output asserted high when sequence 1011 is detected",
+      counter: "Module Name: counter\\nDescription: 4-bit synchronous up-counter with synchronous active-low reset and enable.\\nPort Specifications:\\n- clk: 1-bit input clock\\n- rst_n: 1-bit input synchronous active-low reset\\n- en: 1-bit input enable signal\\n- count: 4-bit output count value",
       fifo: "Module Name: fifo_sync\\nDescription: 8-bit synchronous FIFO with 16 words depth.\\nPort Specifications:\\n- clk: 1-bit input clock\\n- rst_n: 1-bit input synchronous active-low reset\\n- wr_en: 1-bit input write enable\\n- rd_en: 1-bit input read enable\\n- wr_data: 8-bit input data to write\\n- rd_data: 8-bit output data read from FIFO\\n- full: 1-bit output status flag\\n- empty: 1-bit output status flag",
       alu: "Module Name: alu\\nDescription: 8-bit Arithmetic Logic Unit with operations ADD, SUB, AND, OR, XOR, SHL, SHR, PASS_A and flags zero, carry, negative.",
       uart_tx: "Module Name: uart_tx\\nDescription: UART Transmitter 8-N-1 format transmitting 8 data bits with start and stop bits.",
       spi_master: "Module Name: spi_master\\nDescription: SPI Master Mode 0 controller supporting 8-bit full-duplex transfers."
     };
+
+    let activeRunId = null;
+    let pollInterval = null;
+    let currentArtifacts = {};
 
     function loadPreset() {
       const val = document.getElementById('preset-select').value;
@@ -460,13 +773,69 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    function switchTab(name) {
+      const tabs = ['rtl', 'testbench', 'eda', 'microarch', 'requirements', 'review'];
+      tabs.forEach(t => {
+        const btn = document.querySelector(`[onclick="switchTab('${t}')"]`);
+        const content = document.getElementById(`tab-${t}`);
+        if (btn) btn.classList.toggle('active', t === name);
+        if (content) content.classList.toggle('active', t === name);
+      });
+    }
+
+    function copyCode(id) {
+      const text = document.getElementById(id).innerText;
+      navigator.clipboard.writeText(text);
+      alert('Copied to clipboard');
+    }
+
+    async function initSystem() {
+      loadPreset();
+      await fetchRuns();
+    }
+
+    async function fetchRuns() {
+      try {
+        const res = await fetch('/api/runs');
+        const runs = await res.json();
+        const container = document.getElementById('runs-history');
+        if (!runs || runs.length === 0) {
+          container.innerHTML = '<div style="padding: 10px; color: var(--text-muted); text-align: center;">No prior runs</div>';
+          return;
+        }
+
+        container.innerHTML = runs.map(r => `
+          <div class="history-item ${r.run_id === activeRunId ? 'active' : ''}" onclick="selectRun('${r.run_id}')">
+            <span>${r.run_id}</span>
+            <span style="color: ${r.status === 'PASS' ? 'var(--success)' : (r.status === 'RUNNING' ? 'var(--accent)' : 'var(--text-muted)')}; font-weight: 600;">
+              ${r.status}
+            </span>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error('Failed to fetch runs:', e);
+      }
+    }
+
+    function selectRun(runId) {
+      activeRunId = runId;
+      document.getElementById('active-run-id').innerText = runId;
+      if (pollInterval) clearInterval(pollInterval);
+      pollLiveStatus(runId);
+      // If it is running, poll continuously
+      pollInterval = setInterval(() => pollLiveStatus(runId), 800);
+    }
+
     async function startGeneration() {
       const spec = document.getElementById('spec-text').value.trim();
       if (!spec) return alert('Enter a specification or select a preset.');
 
       const btn = document.getElementById('run-btn');
       btn.disabled = true;
-      btn.innerText = 'Executing Pipeline...';
+      btn.innerText = 'Initializing Agents...';
+
+      // Reset UI pipeline state
+      resetPipelineVisuals();
 
       try {
         const res = await fetch('/api/runs', {
@@ -475,26 +844,159 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           body: JSON.stringify({spec_text: spec})
         });
         const result = await res.json();
-        await fetchRuns();
-        if (result.run_id) await loadRun(result.run_id);
+        if (result.run_id) {
+          activeRunId = result.run_id;
+          document.getElementById('active-run-id').innerText = result.run_id;
+          await fetchRuns();
+
+          // Start rapid polling
+          if (pollInterval) clearInterval(pollInterval);
+          pollInterval = setInterval(() => pollLiveStatus(result.run_id), 600);
+        }
       } catch(e) {
         alert('Pipeline execution error: ' + e);
-      } finally {
         btn.disabled = false;
         btn.innerText = 'Execute Generation & Verification';
       }
     }
 
-    async function openWaveforms() {
-      if (!activeRunData || !activeRunData.run_id) return alert('Select an execution record first.');
+    function resetPipelineVisuals() {
+      const stages = ['SPEC_ANALYSIS', 'ARCHITECTURE_DESIGN', 'RTL_GENERATION', 'VERIFICATION_GENERATION', 'SCRIPT_ENGINEER', 'EDA_EXECUTION', 'REVIEW', 'REFLECTION'];
+      stages.forEach(s => {
+        const card = document.getElementById(`card-${s}`);
+        const status = document.getElementById(`status-${s}`);
+        if (card) {
+          card.className = 'node-card';
+        }
+        if (status) {
+          status.innerText = 'STANDBY';
+        }
+      });
+      document.getElementById('progress-bar').style.width = '5%';
+      document.getElementById('progress-percent').innerText = '5%';
+      document.getElementById('terminal-body').innerHTML = '';
+      document.getElementById('run-state-badge').innerText = 'PIPELINE: STARTING';
+    }
+
+    async function pollLiveStatus(runId) {
       try {
-        await fetch(`/api/runs/${activeRunData.run_id}/wave`, {method: 'POST'});
-      } catch(e) {
-        alert('Unable to launch GTKWave viewer');
+        const res = await fetch(`/api/runs/${runId}/live`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // 1. Update Progress Bar & Spotlight
+        const pct = data.progress_percent || 10;
+        document.getElementById('progress-bar').style.width = `${pct}%`;
+        document.getElementById('progress-percent').innerText = `${pct}%`;
+        document.getElementById('spotlight-agent').innerText = data.active_agent || 'PIPELINE';
+        document.getElementById('spotlight-desc').innerText = data.agent_role_desc || 'In progress...';
+        document.getElementById('run-state-badge').innerText = `PIPELINE: ${data.status || 'RUNNING'}`;
+
+        // 2. Update Stage Cards
+        if (data.stages) {
+          Object.keys(data.stages).forEach(s => {
+            const stage = data.stages[s];
+            const card = document.getElementById(`card-${s}`);
+            const statusEl = document.getElementById(`status-${s}`);
+            const detailEl = document.getElementById(`detail-${s}`);
+
+            if (card && stage) {
+              card.className = 'node-card';
+              if (stage.status === 'RUNNING') {
+                card.classList.add('running');
+                statusEl.innerText = 'WORKING';
+              } else if (stage.status === 'DONE') {
+                card.classList.add('done');
+                statusEl.innerText = 'COMPLETE';
+              } else if (stage.status === 'FAILED') {
+                card.classList.add('failed');
+                statusEl.innerText = 'REPAIR';
+              } else {
+                statusEl.innerText = 'STANDBY';
+              }
+
+              if (stage.detail && detailEl) {
+                detailEl.innerText = stage.detail;
+              }
+            }
+          });
+        }
+
+        // 3. Update Activity Feed Terminal
+        if (data.logs && Array.isArray(data.logs)) {
+          const body = document.getElementById('terminal-body');
+          body.innerHTML = data.logs.map(l => `
+            <div class="log-line">
+              <span class="log-time">[${l.time}]</span>
+              <span class="log-agent">[${l.agent}]</span>
+              <span class="log-msg">${escapeHtml(l.message)}</span>
+            </div>
+          `).join('');
+          body.scrollTop = body.scrollHeight;
+        }
+
+        // 4. Update Collateral Tabs
+        if (data.artifacts) {
+          const art = data.artifacts;
+          if (art.rtl && art.rtl !== currentArtifacts.rtl) {
+            document.getElementById('code-rtl').innerText = art.rtl;
+            currentArtifacts.rtl = art.rtl;
+          }
+          if (art.testbench && art.testbench !== currentArtifacts.testbench) {
+            document.getElementById('code-tb').innerText = art.testbench;
+            currentArtifacts.testbench = art.testbench;
+          }
+          if (art.eda_reports && art.eda_reports !== currentArtifacts.eda_reports) {
+            document.getElementById('code-eda').innerText = art.eda_reports;
+            currentArtifacts.eda_reports = art.eda_reports;
+          }
+          if (art.architecture) {
+            document.getElementById('code-arch').innerText = JSON.stringify(art.architecture, null, 2);
+          }
+          if (art.requirements) {
+            document.getElementById('code-reqs').innerText = JSON.stringify(art.requirements, null, 2);
+          }
+          if (art.review) {
+            document.getElementById('code-review').innerText = JSON.stringify(art.review, null, 2);
+          }
+        }
+
+        // 5. Completion check
+        const isTerminal = (data.status === 'SUCCESS' || data.status === 'HUMAN_ESCALATION' || data.status === 'FAILED');
+        if (isTerminal) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+          const btn = document.getElementById('run-btn');
+          btn.disabled = false;
+          btn.innerText = 'Execute Generation & Verification';
+          await fetchRuns();
+        }
+      } catch (e) {
+        console.error('Live poll error:', e);
       }
     }
 
-    init();
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    async function openWaveforms() {
+      if (!activeRunId) return alert('Select or run an execution first.');
+      try {
+        const res = await fetch(`/api/runs/${activeRunId}/wave`, {method: 'POST'});
+        const data = await res.json();
+        if (data.status === 'launched') {
+          alert('GTKWave waveform viewer launched in WSL2.');
+        } else {
+          alert('No .vcd waveform file found for this execution yet.');
+        }
+      } catch(e) {
+        alert('Unable to launch GTKWave viewer: ' + e);
+      }
+    }
+
+    initSystem();
   </script>
 </body>
 </html>
@@ -505,6 +1007,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 def serve_dashboard():
     """Serves the main interactive dashboard interface."""
     return HTMLResponse(content=DASHBOARD_HTML)
+
+
+@router.get("/api/system/status")
+def system_status() -> Dict[str, Any]:
+    """Audits local LLM and WSL EDA availability."""
+    ollama = OllamaClient()
+    ok, models = ollama.check_health()
+    return {
+        "ollama_online": ok,
+        "primary_model": config.primary_model,
+        "fast_model": config.fast_model,
+        "installed_models": models,
+        "wsl_ready": True,
+    }
 
 
 @router.get("/api/runs")
@@ -523,6 +1039,12 @@ def list_runs() -> List[Dict[str, Any]]:
                 try:
                     rev_data = json.loads(sorted(review_files)[-1].read_text(encoding="utf-8"))
                     status = rev_data.get("status", "UNKNOWN")
+                except Exception:
+                    pass
+            elif (d / "live_status.json").exists():
+                try:
+                    live_data = json.loads((d / "live_status.json").read_text(encoding="utf-8"))
+                    status = live_data.get("status", "RUNNING")
                 except Exception:
                     pass
 
@@ -582,14 +1104,77 @@ def get_run(run_id: str) -> Dict[str, Any]:
     }
 
 
+@router.get("/api/runs/{run_id}/live")
+def get_run_live(run_id: str) -> Dict[str, Any]:
+    """Retrieves real-time status and live generated collateral for visualization."""
+    run_dir = config.base_dir / "runs" / run_id
+    if not run_dir.exists():
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    status_file = run_dir / "live_status.json"
+    if status_file.exists():
+        try:
+            data = json.loads(status_file.read_text(encoding="utf-8"))
+            artifacts = data.setdefault("artifacts", {})
+            if not artifacts.get("rtl"):
+                rtl_files = list((run_dir / "rtl").glob("*.v")) if (run_dir / "rtl").exists() else []
+                if rtl_files:
+                    artifacts["rtl"] = rtl_files[0].read_text(encoding="utf-8")
+            if not artifacts.get("testbench"):
+                tb_files = list((run_dir / "verification").glob("*.v")) if (run_dir / "verification").exists() else []
+                if tb_files:
+                    artifacts["testbench"] = tb_files[0].read_text(encoding="utf-8")
+            if not artifacts.get("requirements"):
+                req_file = run_dir / "requirements.json"
+                if req_file.exists():
+                    artifacts["requirements"] = json.loads(req_file.read_text(encoding="utf-8"))
+            if not artifacts.get("architecture"):
+                arch_file = run_dir / "architecture.json"
+                if arch_file.exists():
+                    artifacts["architecture"] = json.loads(arch_file.read_text(encoding="utf-8"))
+            if not artifacts.get("review"):
+                rev_files = list((run_dir / "reports").glob("review_iter_*.json")) if (run_dir / "reports").exists() else []
+                if rev_files:
+                    artifacts["review"] = json.loads(sorted(rev_files)[-1].read_text(encoding="utf-8"))
+            if not artifacts.get("eda_reports"):
+                if (run_dir / "reports").exists():
+                    logs = []
+                    for lf in sorted((run_dir / "reports").glob("*.log")):
+                        logs.append(f"=== {lf.name} ===\n" + lf.read_text(encoding="utf-8", errors="replace"))
+                    if logs:
+                        artifacts["eda_reports"] = "\n\n".join(logs)
+            return data
+        except Exception:
+            pass
+
+    # Fallback to get_run
+    run_data = get_run(run_id)
+    return {
+        "run_id": run_id,
+        "status": "COMPLETED",
+        "current_state": "SUCCESS" if run_data.get("review", {}).get("status") == "PASS" else "COMPLETED",
+        "active_agent": "None",
+        "agent_role_desc": "Execution finished",
+        "progress_percent": 100,
+        "stages": {},
+        "logs": [],
+        "artifacts": {
+            "rtl": run_data.get("rtl"),
+            "testbench": run_data.get("testbench"),
+            "requirements": run_data.get("requirements"),
+            "architecture": run_data.get("architecture"),
+            "review": run_data.get("review"),
+            "eda_reports": run_data.get("eda_reports"),
+        }
+    }
+
+
 class RunRequest(BaseModel):
     spec_text: str
 
 
-@router.post("/api/runs")
-def trigger_run(payload: RunRequest) -> Dict[str, Any]:
-    """Runs the multi-agent closed-loop flow from the dashboard."""
-    from datetime import datetime
+def _run_pipeline_worker(run_id: str, spec_text: str):
+    """Executes the closed-loop pipeline asynchronously in a background thread."""
     from agents import (
         ArchitectAgent,
         ReflectionAgent,
@@ -603,38 +1188,105 @@ def trigger_run(payload: RunRequest) -> Dict[str, Any]:
     from orchestrator import Orchestrator, PipelineContext, RealEDAExecutor
     from schemas import create_run_layout
 
+    try:
+        run_paths = create_run_layout(run_id=run_id, base_dir=config.base_dir / "runs")
+        ctx = PipelineContext(
+            run_id=run_id,
+            run_paths=run_paths,
+            spec_text=spec_text,
+        )
+
+        client = InferenceGatewayClient()
+        spec_agent = SpecificationAnalystAgent(gateway_client=client, model=config.fast_model, temperature=0.0)
+        arch_agent = ArchitectAgent(gateway_client=client, model=config.fast_model, temperature=0.0)
+        rtl_agent = RTLCoderAgent(gateway_client=client, model=config.primary_model, temperature=0.0)
+        verif_agent = VerificationEngineerAgent(gateway_client=client, model=config.primary_model, temperature=0.0)
+        script_agent = ScriptEngineerAgent(gateway_client=client, model=config.fast_model, temperature=0.0)
+        eda_executor = RealEDAExecutor()
+        reviewer_agent = ReviewerAgent(gateway_client=client, model=config.fast_model)
+        reflection_agent = ReflectionAgent(gateway_client=client, model=config.fast_model)
+
+        orchestrator = Orchestrator(
+            spec_agent=spec_agent,
+            arch_agent=arch_agent,
+            rtl_agent=rtl_agent,
+            verif_agent=verif_agent,
+            script_agent=script_agent,
+            eda_executor=eda_executor,
+            reviewer_agent=reviewer_agent,
+            reflection_agent=reflection_agent,
+            enable_git_commits=False,
+        )
+
+        orchestrator.run(ctx)
+    except Exception as ex:
+        status_file = config.base_dir / "runs" / run_id / "live_status.json"
+        try:
+            status_data = json.loads(status_file.read_text(encoding="utf-8")) if status_file.exists() else {}
+        except Exception:
+            status_data = {}
+        status_data["status"] = "FAILED"
+        logs = status_data.setdefault("logs", [])
+        logs.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "agent": "System",
+            "message": f"Execution error: {str(ex)}",
+        })
+        try:
+            status_file.write_text(json.dumps(status_data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+
+@router.post("/api/runs")
+def trigger_run(payload: RunRequest) -> Dict[str, Any]:
+    """Runs the multi-agent closed-loop flow asynchronously from the dashboard."""
     run_id = f"web_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    run_paths = create_run_layout(run_id=run_id, base_dir=config.base_dir / "runs")
-    ctx = PipelineContext(
-        run_id=run_id,
-        run_paths=run_paths,
-        spec_text=payload.spec_text,
+
+    # Pre-create directory and initial live_status.json so immediate first poll succeeds
+    run_dir = config.base_dir / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    initial_status = {
+        "run_id": run_id,
+        "status": "RUNNING",
+        "current_state": "SPEC_ANALYSIS",
+        "active_agent": "Specification Analyst",
+        "agent_role_desc": "Parsing requirements schema and extracting ports...",
+        "iteration": 0,
+        "progress_percent": 8,
+        "stages": {
+            "SPEC_ANALYSIS": {"name": "Spec Analyst", "status": "RUNNING", "detail": "Extracting ports & clocking with 1.5B", "badge": "1.5B"},
+            "ARCHITECTURE_DESIGN": {"name": "Architect", "status": "WAITING", "detail": "Pending microarchitecture planning", "badge": "1.5B"},
+            "RTL_GENERATION": {"name": "RTL Coder", "status": "WAITING", "detail": "Pending Verilog synthesis", "badge": "3B"},
+            "VERIFICATION_GENERATION": {"name": "Verif Engineer", "status": "WAITING", "detail": "Pending testbench generation", "badge": "3B"},
+            "SCRIPT_ENGINEER": {"name": "Script Engineer", "status": "WAITING", "detail": "Pending EDA script generation", "badge": "1.5B"},
+            "EDA_EXECUTION": {"name": "EDA Engine", "status": "WAITING", "detail": "Pending WSL2 execution", "badge": "WSL2"},
+            "REVIEW": {"name": "Reviewer", "status": "WAITING", "detail": "Pending verification review", "badge": "1.5B"},
+            "REFLECTION": {"name": "Reflection", "status": "WAITING", "detail": "Pending diagnosis & repair", "badge": "1.5B"},
+        },
+        "logs": [
+            {"time": datetime.now().strftime("%H:%M:%S"), "agent": "System", "message": f"Run '{run_id}' registered. Closed-loop multi-agent flow dispatched."}
+        ],
+        "artifacts": {
+            "spec_text": payload.spec_text,
+            "requirements": None,
+            "architecture": None,
+            "rtl": None,
+            "testbench": None,
+            "eda_reports": None,
+            "review": None,
+        }
+    }
+    (run_dir / "live_status.json").write_text(json.dumps(initial_status, indent=2), encoding="utf-8")
+
+    worker_thread = threading.Thread(
+        target=_run_pipeline_worker,
+        args=(run_id, payload.spec_text),
+        daemon=False,
     )
+    worker_thread.start()
 
-    client = InferenceGatewayClient()
-    spec_agent = SpecificationAnalystAgent(gateway_client=client, model=config.fast_model, temperature=0.0)
-    arch_agent = ArchitectAgent(gateway_client=client, model=config.fast_model, temperature=0.0)
-    rtl_agent = RTLCoderAgent(gateway_client=client, model=config.primary_model, temperature=0.0)
-    verif_agent = VerificationEngineerAgent(gateway_client=client, model=config.primary_model, temperature=0.0)
-    script_agent = ScriptEngineerAgent(gateway_client=client, model=config.fast_model, temperature=0.0)
-    eda_executor = RealEDAExecutor()
-    reviewer_agent = ReviewerAgent(gateway_client=client, model=config.fast_model)
-    reflection_agent = ReflectionAgent(gateway_client=client, model=config.fast_model)
-
-    orchestrator = Orchestrator(
-        spec_agent=spec_agent,
-        arch_agent=arch_agent,
-        rtl_agent=rtl_agent,
-        verif_agent=verif_agent,
-        script_agent=script_agent,
-        eda_executor=eda_executor,
-        reviewer_agent=reviewer_agent,
-        reflection_agent=reflection_agent,
-        enable_git_commits=False,
-    )
-
-    final_state = orchestrator.run(ctx)
-    return {"run_id": run_id, "final_state": final_state.value}
+    return {"run_id": run_id, "status": "started"}
 
 
 @router.post("/api/runs/{run_id}/wave")

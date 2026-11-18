@@ -16,7 +16,7 @@ class GatewayConfig(BaseModel):
 
     # Models
     primary_model: str = Field(
-        default=os.getenv("GATEWAY_PRIMARY_MODEL", "qwen2.5-coder:7b-instruct-q4_K_M"),
+        default=os.getenv("GATEWAY_PRIMARY_MODEL", "qwen2.5-coder:3b"),
         description="Primary workhorse model for complex reasoning and RTL design"
     )
     fast_model: str = Field(

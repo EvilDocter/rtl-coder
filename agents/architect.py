@@ -77,8 +77,7 @@ class ArchitectAgent(BaseAgent[Requirements, MicroArchitecture]):
                 "fsm_states": [],
                 "datapath_blocks": [],
                 "control_logic": [
-                    "Synchronous increment: on posedge clk when enable, count <= count + 1'b1",
-                    "Overflow indicator: overflow <= (count == 8'd255) && enable"
+                    "Synchronous increment: on posedge clk when enable, count <= count + 1'b1"
                 ],
             }
         else:

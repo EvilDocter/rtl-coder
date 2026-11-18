@@ -156,8 +156,8 @@ def test_counter_closed_loop_mvp(tmp_path: Path):
     )
 
     client = InferenceGatewayClient()
-    fast_model = config.fast_model  # qwen2.5-coder:1.5b
-    primary_model = config.primary_model  # qwen2.5-coder:7b-instruct-q4_K_M
+    fast_model = config.fast_model        # qwen2.5-coder:1.5b
+    primary_model = config.primary_model  # qwen2.5-coder:3b
 
     spec_agent = SpecificationAnalystAgent(gateway_client=client, model=fast_model, temperature=0.0)
     arch_agent = ArchitectAgent(gateway_client=client, model=fast_model, temperature=0.0)

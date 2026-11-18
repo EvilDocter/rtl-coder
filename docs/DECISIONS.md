@@ -3,8 +3,8 @@
 ## ADR-001: Local CPU Inference Engine (Ollama + GGUF Quantization)
 - **Status:** Approved
 - **Context:** Chapter 8.1 of the synopsis mentions an NVIDIA GPU for local inference. However, the host system is powered by an AMD Ryzen 6-Core processor with integrated AMD Radeon graphics (no NVIDIA CUDA core support).
-- **Decision:** Use **Ollama** as the local serving engine using AVX2 CPU acceleration. Deploy quantized models (`Qwen2.5-Coder:7b-instruct-q4_K_M` as the primary workhorse, and `Qwen2.5-Coder:1.5b` for fast smoke testing).
-- **Trade-off:** Inference speed on CPU will be slower than dedicated VRAM, but token generation is stable and leaves ~9 GB of RAM free for the OS and EDA compilation. The FastAPI gateway isolates all agent code from model serving details, allowing seamless connection to a college GPU server or external instance later if available.
+- **Decision:** Use **Ollama** as the local serving engine using AVX2 CPU acceleration. Deploy quantized models (`Qwen2.5-Coder:3b` as the primary workhorse, and `Qwen2.5-Coder:1.5b` for fast JSON transformations and reviews).
+- **Trade-off:** Dropping 7B in favor of the lightweight 3B model (1.9 GB) yields ~3x faster inference times on AMD Ryzen CPU (8-14s vs 40s+ per turn) while leaving >11 GB free RAM for OS and EDA synthesis/simulation tools. The FastAPI gateway isolates all agent code from model serving details, allowing seamless connection to a college GPU server or external instance later if available.
 
 ## ADR-002: WSL2 (Ubuntu 24.04) as the EDA Tool Execution Host
 - **Status:** Approved

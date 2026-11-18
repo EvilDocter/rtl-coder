@@ -54,7 +54,14 @@ class VerificationEngineerAgent(BaseAgent[Requirements, VerificationPlan]):
         # 7. Fix #100 ns delay vs 100 increments confusion (100ns = 10 clock cycles with 10ns period)
         sanitized = re.sub(r"count\s*!=\s*8'd100", "count != 8'd10 && count != 8'd100", sanitized)
 
-        # 8. Ensure testbench has a clock generator if clock port exists
+        # 8. Reconcile port widths: fix any wire or reg declarations missing multi-bit widths
+        for p in reqs.ports:
+            if p.width_bits > 1:
+                w_str = f"[{p.width_bits - 1}:0]"
+                sanitized = re.sub(rf"\bwire\s+{p.name}\s*;", f"wire {w_str} {p.name};", sanitized)
+                sanitized = re.sub(rf"\breg\s+{p.name}\s*;", f"reg {w_str} {p.name};", sanitized)
+
+        # 9. Ensure testbench has a clock generator if clock port exists
         clk_name = reqs.clocking.clock_name if reqs.clocking else "clk"
         has_clk = any(p.name == clk_name for p in reqs.ports)
         if has_clk and not re.search(rf"always\s*#\s*\d+\s*{clk_name}\s*=", sanitized):
@@ -99,6 +106,15 @@ class VerificationEngineerAgent(BaseAgent[Requirements, VerificationPlan]):
         tb_regs = [p for p in input_data.ports if p.direction == PortDirection.INPUT]
         tb_wires = [p for p in input_data.ports if p.direction in (PortDirection.OUTPUT, PortDirection.INOUT)]
 
+        decl_lines = []
+        for p in input_data.ports:
+            w_str = f"[{p.width_bits-1}:0] " if p.width_bits > 1 else ""
+            if p.direction == PortDirection.INPUT:
+                decl_lines.append(f"  reg {w_str}{p.name};")
+            else:
+                decl_lines.append(f"  wire {w_str}{p.name};")
+        port_declarations_str = "\n".join(decl_lines)
+
         port_inst_str = ", ".join(f".{p.name}({p.name})" for p in input_data.ports)
 
         example_plan = {
@@ -108,9 +124,7 @@ class VerificationEngineerAgent(BaseAgent[Requirements, VerificationPlan]):
                 f"`timescale 1ns/1ps\n"
                 f"module tb_{input_data.module_name};\n"
                 f"  // Testbench signals\n"
-                f"  reg {clk_port};\n"
-                f"  reg {rst_port};\n"
-                f"  // other reg inputs and wire outputs\n\n"
+                f"{port_declarations_str}\n\n"
                 f"  {input_data.module_name} uut ({port_inst_str});\n\n"
                 f"  always #5 {clk_port} = ~{clk_port};\n\n"
                 f"  initial begin\n"

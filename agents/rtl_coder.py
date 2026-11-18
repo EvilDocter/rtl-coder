@@ -80,6 +80,9 @@ class RTLCoderAgent(BaseAgent[MicroArchitecture, RTLArtefact]):
             sanitized = re.sub(rf"\boutput\s+reg\b(\s*(?:\[[^\]]+\]\s*)?{sig}\b)", r"output wire\1", sanitized)
             # 2. Remove illegal procedural assignments to continuously assigned wire inside always blocks
             sanitized = re.sub(rf"^\s*{sig}\s*<=?[^;]+;\s*\n?", "", sanitized, flags=re.MULTILINE)
+            # 3. If sig is not an output/input/wire/reg, declare it as wire
+            if not re.search(rf"\b(input|output|inout|wire|reg)\b[^\n;]*\b{sig}\b", sanitized):
+                sanitized = re.sub(r"(\);\s*\n)", rf"\1  wire {sig};\n", sanitized, count=1)
 
         always_regs = set(re.findall(r"\b([a-zA-Z_0-9]+)\s*<=", sanitized))
         for sig in always_regs:
