@@ -27,7 +27,7 @@ class VerilatorWrapper:
 
         # Pattern: %(Error|Warning)(?:-([A-Z0-9_]+))?:\s*([^:\n\r]+):(\d+):(?:(\d+):)?\s*(.*)$
         pattern = re.compile(
-            r"^%(Error|Warning)(?:-([A-Z0-9_]+))?:\s*([^:\n\r]+):(\d+):(?:(\d+):)?\s*(.*)$",
+            r"^\s*%(Error|Warning)(?:-([A-Z0-9_]+))?:\s*([^:\n\r]+):(\d+):(?:(\d+):)?\s*(.*)$",
             re.MULTILINE
         )
 
@@ -61,7 +61,7 @@ class VerilatorWrapper:
         """Runs Verilator in lint-only mode across source files."""
         wsl_sources = [self.runner.to_wsl_path(f) for f in source_files]
 
-        cmd = ["verilator", "--lint-only", "-Wall", "-Wno-DECLFILENAME"]
+        cmd = ["verilator", "--lint-only", "-Wall", "-Wno-DECLFILENAME", "-Wno-EOFNEWLINE"]
         if top_module:
             cmd.extend(["--top-module", top_module])
         if ignore_warnings:

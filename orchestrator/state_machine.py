@@ -126,7 +126,13 @@ class Orchestrator:
         elif state == PipelineState.RTL_GENERATION:
             if not self.rtl_agent:
                 raise RuntimeError("RTL Coder Agent not configured")
-            context = {"requirements": ctx.requirements.model_dump()} if ctx.requirements else None
+            context: Dict[str, Any] = {}
+            if ctx.requirements:
+                context["requirements"] = ctx.requirements.model_dump()
+            if ctx.correction:
+                context["correction"] = ctx.correction.model_dump()
+            if ctx.review:
+                context["review"] = ctx.review.model_dump()
             ctx.rtl = self.rtl_agent.execute(ctx.architecture, run_id=ctx.run_id, context=context)
             # Persist RTL source
             rtl_path = ctx.run_paths.rtl_dir / f"{ctx.rtl.module_name}.v"
