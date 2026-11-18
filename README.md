@@ -109,12 +109,31 @@ runs/<run_id>/
 
 ## 5. Quick Start
 
-### 1. Install Dependencies
+### 1. Verify Environment & Toolchain
 ```powershell
-pip install -r requirements.txt
+python cli.py status
 ```
+Audits local Ollama LLM models (`qwen2.5-coder:7b-instruct-q4_K_M`, `qwen2.5-coder:1.5b`) and Ubuntu WSL EDA suite (`iverilog`, `verilator`, `yosys`, `gtkwave`).
 
-### 2. Verify Stack (Smoke Test)
+### 2. Launch Interactive Web Dashboard
 ```powershell
-python -m pytest tests/test_smoke.py
+python cli.py serve
+```
+Open **[http://127.0.0.1:8000](http://127.0.0.1:8000)** in your browser for the full graphical experience:
+- Real-time 7-agent pipeline visualizer
+- Preset library (Counter, FSM, FIFO, ALU, UART, SPI)
+- Code tabs for RTL, Testbenches, Architecture, Requirements, and EDA Reports
+- One-click GTKWave waveform viewer launcher
+
+### 3. Run Autonomous Generation from CLI
+```powershell
+# Run a preset design
+python cli.py run --preset counter
+
+# Or provide a custom specification text
+python cli.py run --spec "Module Name: my_adder. Description: 8-bit combinational adder..."
+
+# Inspect past runs and launch waveforms
+python cli.py list-runs
+python cli.py inspect <run_id> --wave
 ```
