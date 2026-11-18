@@ -10,14 +10,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from gateway.client import OllamaClient
 from gateway.config import config
 from gateway.schemas import GenerateRequest, GenerateResponse, HealthResponse
+from web.dashboard import router as dashboard_router
 
 app = FastAPI(
-    title="RTL-Coder Local Inference Gateway",
-    description="Privacy-preserving local inference gateway routing agent tasks to open-weight LLMs",
+    title="RTL-Coder Local Inference Gateway & Dashboard",
+    description="Privacy-preserving local inference gateway and interactive multi-agent hardware dashboard",
     version="1.0.0",
 )
 
-# Enable CORS for local client tools and potential web dashboard
+# Enable CORS for local client tools and web dashboard
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,6 +26,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount Dashboard & Management APIs
+app.include_router(dashboard_router)
 
 # Singleton Ollama client
 ollama_client = OllamaClient()
