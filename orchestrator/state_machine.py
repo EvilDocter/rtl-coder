@@ -15,6 +15,7 @@ from schemas.hardware import (
     ReviewFinding,
     RTLArtefact,
     VerificationPlan,
+    EDAScriptArtefact,
 )
 from schemas.run_layout import RunPaths, create_run_layout
 
@@ -47,6 +48,7 @@ class PipelineContext(BaseModel):
     architecture: Optional[MicroArchitecture] = None
     rtl: Optional[RTLArtefact] = None
     verification: Optional[VerificationPlan] = None
+    eda_scripts: List[EDAScriptArtefact] = Field(default_factory=list)
     tool_reports: List[ToolReport] = Field(default_factory=list)
     review: Optional[ReviewFinding] = None
     correction: Optional[CorrectionTask] = None
@@ -64,6 +66,7 @@ class Orchestrator:
         arch_agent: Optional[Any] = None,
         rtl_agent: Optional[Any] = None,
         verif_agent: Optional[Any] = None,
+        script_agent: Optional[Any] = None,
         eda_executor: Optional[Callable[[PipelineContext], List[ToolReport]]] = None,
         reviewer_agent: Optional[Any] = None,
         reflection_agent: Optional[Any] = None,
@@ -73,6 +76,7 @@ class Orchestrator:
         self.arch_agent = arch_agent
         self.rtl_agent = rtl_agent
         self.verif_agent = verif_agent
+        self.script_agent = script_agent
         self.eda_executor = eda_executor
         self.reviewer_agent = reviewer_agent
         self.reflection_agent = reflection_agent
@@ -152,6 +156,25 @@ class Orchestrator:
             with open(tb_path, "w", encoding="utf-8") as f:
                 f.write(ctx.verification.testbench_code)
             ctx.verification.file_path = tb_path
+
+            # If Script Engineer is configured, synthesize EDA scripts
+            if self.script_agent and ctx.rtl:
+                try:
+                    script_input = {
+                        "tool": "yosys",
+                        "top_module": ctx.rtl.top_module,
+                        "sources": [ctx.rtl.file_path.name if ctx.rtl.file_path else f"{ctx.rtl.module_name}.v"],
+                        "output_file": f"{ctx.rtl.module_name}_syn.v",
+                    }
+                    script_artefact = self.script_agent.execute(script_input, run_id=ctx.run_id)
+                    script_path = ctx.run_paths.scripts_dir / script_artefact.file_name
+                    with open(script_path, "w", encoding="utf-8") as sf:
+                        sf.write(script_artefact.script_content)
+                    script_artefact.file_path = script_path
+                    ctx.eda_scripts.append(script_artefact)
+                except Exception:
+                    pass
+
             ctx.current_state = PipelineState.EDA_EXECUTION
             self._commit_state(ctx, f"Generated Testbench: tb_{ctx.verification.top_module}.v")
             return ctx.current_state

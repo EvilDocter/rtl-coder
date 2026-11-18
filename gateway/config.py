@@ -28,10 +28,10 @@ class GatewayConfig(BaseModel):
     host: str = Field(default="127.0.0.1", description="Gateway host bind address")
     port: int = Field(default=8000, description="Gateway port")
     request_timeout_seconds: float = Field(
-        default=180.0,
+        default=90.0,
         description="Timeout per LLM request in seconds (generous for CPU inference)"
     )
-    max_retries: int = Field(default=3, description="Maximum retries for transient failures or invalid JSON")
+    max_retries: int = Field(default=1, description="Maximum retries for transient failures or invalid JSON")
 
     # Base workspace directory
     base_dir: Path = Field(
