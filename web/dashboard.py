@@ -1,17 +1,16 @@
 """Interactive Web Dashboard for the Multi-Agent RTL Coder Framework."""
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 import json
 from pathlib import Path
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from pydantic import BaseModel
 
 from eda.runner import WSLCommandRunner
 from gateway.client import OllamaClient
 from gateway.config import config
-from knowledge import HARDWARE_PATTERNS
 
 router = APIRouter(tags=["Dashboard"])
 
@@ -20,127 +19,347 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RTL-Coder: Multi-Agent AI Hardware Framework</title>
+  <title>RTL-Coder &mdash; Hardware Synthesis & Verification Framework</title>
   <style>
     :root {
-      --bg: #0d1117;
-      --card: #161b22;
-      --border: #30363d;
-      --accent: #58a6ff;
+      --bg: #090a0f;
+      --surface: #111318;
+      --surface-hover: #171a22;
+      --border: #21262d;
+      --border-focus: #388bfd;
+      --accent: #2f81f7;
+      --text-primary: #e6edf3;
+      --text-secondary: #7d8590;
+      --text-tertiary: #484f58;
       --success: #238636;
-      --danger: #da3633;
-      --warning: #d29922;
-      --text: #c9d1d9;
-      --text-muted: #8b949e;
+      --success-text: #3fb950;
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; }
-    body { background-color: var(--bg); color: var(--text); padding: 24px; }
-    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
-    h1 { font-size: 22px; color: #fff; display: flex; align-items: center; gap: 10px; }
-    .badge { padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; }
-    .badge-online { background: #23863633; color: #3fb950; border: 1px solid #238636; }
-    .badge-model { background: #1f6feb33; color: #58a6ff; border: 1px solid #1f6feb; }
-    
-    .grid { display: grid; grid-template-columns: 380px 1fr; gap: 24px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 18px; margin-bottom: 20px; }
-    .card h2 { font-size: 15px; color: #fff; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
-    
-    label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600; }
-    select, textarea, input, button { width: 100%; background: #0d1117; border: 1px solid var(--border); border-radius: 6px; color: #fff; padding: 10px; margin-bottom: 12px; font-size: 13px; }
-    textarea { height: 160px; resize: vertical; line-height: 1.4; font-family: monospace; }
-    button { background: #238636; border: none; cursor: pointer; font-weight: 600; transition: 0.2s; padding: 12px; margin-top: 6px; }
-    button:hover { background: #2ea043; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 32px;
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 20px;
+      margin-bottom: 24px;
+    }
+    .brand h1 {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+      color: #fff;
+    }
+    .brand p {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+    .system-status {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .tag {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-secondary);
+    }
+    .tag.online {
+      color: var(--success-text);
+      border-color: rgba(35, 134, 54, 0.4);
+      background: rgba(35, 134, 54, 0.1);
+    }
 
     /* Pipeline Status Flow */
-    .pipeline { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
-    .agent-node { flex: 1; min-width: 110px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: #0d1117; text-align: center; }
-    .agent-node .role { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
-    .agent-node .status { font-size: 12px; font-weight: 600; color: #8b949e; }
-    .agent-node.active { border-color: var(--accent); background: #388bfd11; }
-    .agent-node.active .status { color: var(--accent); }
-    .agent-node.pass { border-color: #3fb950; background: #23863611; }
-    .agent-node.pass .status { color: #3fb950; }
+    .pipeline-container {
+      margin-bottom: 24px;
+    }
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 6px;
+    }
+    .node {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px 10px;
+      transition: border-color 0.15s ease;
+    }
+    .node .role {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      color: var(--text-secondary);
+      margin-bottom: 2px;
+    }
+    .node .state {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+    }
+    .node.active {
+      border-color: var(--accent);
+      background: rgba(47, 129, 247, 0.05);
+    }
+    .node.active .state {
+      color: var(--accent);
+    }
+    .node.pass {
+      border-color: rgba(35, 134, 54, 0.5);
+      background: rgba(35, 134, 54, 0.05);
+    }
+    .node.pass .state {
+      color: var(--success-text);
+    }
 
-    /* Tabs */
-    .tab-nav { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 14px; gap: 4px; }
-    .tab-btn { background: none; border: none; padding: 8px 14px; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; width: auto; font-size: 13px; }
-    .tab-btn.active { color: #fff; border-bottom: 2px solid var(--accent); font-weight: 600; }
-    .code-box { background: #090d13; border: 1px solid var(--border); border-radius: 6px; padding: 14px; font-family: Consolas, monospace; font-size: 12px; line-height: 1.4; max-height: 480px; overflow: auto; white-space: pre-wrap; }
-    
-    .run-item { padding: 10px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
-    .run-item:hover { background: #1f242c; }
+    /* Main Grid Layout */
+    .grid {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 18px;
+      margin-bottom: 20px;
+    }
+    .panel-header {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    /* Form Inputs */
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+    }
+    select, textarea, button {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-primary);
+      padding: 8px 10px;
+      font-size: 12px;
+      margin-bottom: 12px;
+      transition: border-color 0.15s ease;
+    }
+    select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--border-focus);
+    }
+    textarea {
+      height: 180px;
+      resize: vertical;
+      font-family: var(--font-mono);
+      line-height: 1.45;
+    }
+    button.btn-primary {
+      background: #238636;
+      border: 1px solid rgba(240, 246, 252, 0.1);
+      color: #fff;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 9px;
+      margin-top: 4px;
+    }
+    button.btn-primary:hover {
+      background: #2ea043;
+    }
+    button.btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 5px 10px;
+      width: auto;
+    }
+    button.btn-secondary:hover {
+      background: var(--surface-hover);
+      border-color: var(--text-secondary);
+    }
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* Tabs & Code Viewer */
+    .viewer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+      margin-bottom: 12px;
+    }
+    .tabs {
+      display: flex;
+      gap: 2px;
+    }
+    .tab {
+      background: none;
+      border: none;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-radius: 4px;
+      width: auto;
+      margin: 0;
+    }
+    .tab:hover {
+      color: var(--text-primary);
+      background: var(--surface-hover);
+    }
+    .tab.active {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.08);
+      font-weight: 500;
+    }
+    .code-view {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.5;
+      max-height: 540px;
+      overflow: auto;
+      white-space: pre-wrap;
+      color: #c9d1d9;
+    }
+
+    /* Run List */
+    .run-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    .run-row:hover {
+      background: var(--surface-hover);
+    }
+    .run-name {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-primary);
+    }
+    .run-meta {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
   </style>
 </head>
 <body>
   <header>
-    <div>
-      <h1>⚡ RTL-Coder Multi-Agent Hardware Framework</h1>
-      <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Local, Privacy-Preserving Closed-Loop Hardware Design, Verification & EDA Automation</p>
+    <div class="brand">
+      <h1>RTL-Coder</h1>
+      <p>Autonomous Multi-Agent RTL Design, Verification & EDA Pipeline</p>
     </div>
-    <div style="display: flex; gap: 8px;">
-      <span class="badge badge-online" id="ollama-status">Ollama Online</span>
-      <span class="badge badge-model" id="model-badge">qwen2.5-coder:7b</span>
+    <div class="system-status">
+      <span class="tag online" id="ollama-status">Backend Online</span>
+      <span class="tag" id="model-badge">qwen2.5-coder:7b</span>
     </div>
   </header>
 
-  <div class="pipeline">
-    <div class="agent-node" id="node-spec"><div class="role">Spec Analyst</div><div class="status">IDLE</div></div>
-    <div class="agent-node" id="node-arch"><div class="role">Architect</div><div class="status">IDLE</div></div>
-    <div class="agent-node" id="node-rtl"><div class="role">RTL Coder</div><div class="status">IDLE</div></div>
-    <div class="agent-node" id="node-verif"><div class="role">Verif Eng</div><div class="status">IDLE</div></div>
-    <div class="agent-node" id="node-script"><div class="role">Script Eng</div><div class="status">IDLE</div></div>
-    <div class="agent-node" id="node-eda"><div class="role">EDA Engine</div><div class="status">IDLE</div></div>
-    <div class="agent-node" id="node-review"><div class="role">Reviewer</div><div class="status">IDLE</div></div>
-    <div class="agent-node" id="node-reflect"><div class="role">Reflection</div><div class="status">IDLE</div></div>
+  <div class="pipeline-container">
+    <div class="section-label">Pipeline Execution Stages</div>
+    <div class="pipeline">
+      <div class="node" id="node-spec"><div class="role">Specification</div><div class="state">IDLE</div></div>
+      <div class="node" id="node-arch"><div class="role">Architecture</div><div class="state">IDLE</div></div>
+      <div class="node" id="node-rtl"><div class="role">RTL Coder</div><div class="state">IDLE</div></div>
+      <div class="node" id="node-verif"><div class="role">Verification</div><div class="state">IDLE</div></div>
+      <div class="node" id="node-script"><div class="role">Scripting</div><div class="state">IDLE</div></div>
+      <div class="node" id="node-eda"><div class="role">EDA Engine</div><div class="state">IDLE</div></div>
+      <div class="node" id="node-review"><div class="role">Review</div><div class="state">IDLE</div></div>
+      <div class="node" id="node-reflect"><div class="role">Reflection</div><div class="state">IDLE</div></div>
+    </div>
   </div>
 
   <div class="grid">
-    <!-- Left Column: Controls & Presets -->
     <div>
-      <div class="card">
-        <h2>Design Specification</h2>
-        <label>Preset Hardware Modules</label>
+      <div class="panel">
+        <div class="panel-header">Design Specification</div>
+        <label for="preset-select">Standard Presets</label>
         <select id="preset-select" onchange="loadPreset()">
-          <option value="">-- Custom Specification --</option>
+          <option value="">Custom Design Specification</option>
           <option value="counter">8-bit Synchronous Counter</option>
           <option value="fsm">1011 Sequence Detector FSM</option>
           <option value="fifo">16-Word Synchronous FIFO</option>
           <option value="alu">8-bit Arithmetic Logic Unit (ALU)</option>
           <option value="uart_tx">UART Transmitter (8-N-1)</option>
-          <option value="spi_master">SPI Master Mode 0 Controller</option>
+          <option value="spi_master">SPI Master Controller (Mode 0)</option>
         </select>
 
-        <label>Specification Text</label>
-        <textarea id="spec-text" placeholder="Describe the digital hardware module, ports, clocks, active levels, and operations..."></textarea>
+        <label for="spec-text">Specification Input</label>
+        <textarea id="spec-text" placeholder="Enter hardware description, ports, reset levels, and functional behavior..."></textarea>
 
-        <button id="run-btn" onclick="startGeneration()">⚡ Run Multi-Agent Closed Loop</button>
+        <button class="btn-primary" id="run-btn" onclick="startGeneration()">Execute Generation & Verification</button>
       </div>
 
-      <div class="card">
-        <h2>Past Execution Runs</h2>
-        <div id="runs-list" style="max-height: 240px; overflow-y: auto;">
-          <p style="color: var(--text-muted); font-size: 12px;">Loading past runs...</p>
+      <div class="panel">
+        <div class="panel-header">Execution History</div>
+        <div id="runs-list" style="max-height: 220px; overflow-y: auto;">
+          <p style="color: var(--text-secondary); font-size: 11px;">Loading records...</p>
         </div>
       </div>
     </div>
 
-    <!-- Right Column: Collateral & Verification Viewer -->
     <div>
-      <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <div class="tab-nav">
-            <button class="tab-btn active" onclick="switchTab('rtl')">RTL Verilog</button>
-            <button class="tab-btn" onclick="switchTab('tb')">Testbench</button>
-            <button class="tab-btn" onclick="switchTab('arch')">Architecture</button>
-            <button class="tab-btn" onclick="switchTab('reqs')">Requirements</button>
-            <button class="tab-btn" onclick="switchTab('reports')">EDA Reports</button>
-            <button class="tab-btn" onclick="switchTab('review')">Review & Reflection</button>
+      <div class="panel" style="padding: 14px;">
+        <div class="viewer-header">
+          <div class="tabs">
+            <button class="tab active" onclick="switchTab('rtl')">RTL Verilog</button>
+            <button class="tab" onclick="switchTab('tb')">Testbench</button>
+            <button class="tab" onclick="switchTab('arch')">Architecture</button>
+            <button class="tab" onclick="switchTab('reqs')">Requirements</button>
+            <button class="tab" onclick="switchTab('reports')">EDA Diagnostics</button>
+            <button class="tab" onclick="switchTab('review')">Review & Reflection</button>
           </div>
-          <button style="width: auto; padding: 6px 14px; font-size: 12px; margin-bottom: 14px; background: #1f6feb;" onclick="openWaveforms()">📈 Open GTKWave</button>
+          <button class="btn-secondary" onclick="openWaveforms()">View Waveforms (GTKWave)</button>
         </div>
 
-        <div id="tab-content" class="code-box">// Collateral will appear here upon generation...</div>
+        <div id="tab-content" class="code-view">// Select an execution record to view generated collateral.</div>
       </div>
     </div>
   </div>
@@ -158,7 +377,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       try {
         const res = await fetch('/health');
         const data = await res.json();
-        document.getElementById('ollama-status').innerText = data.ollama_connected ? 'Ollama Online' : 'Ollama Offline';
+        const el = document.getElementById('ollama-status');
+        el.innerText = data.ollama_connected ? 'Backend Online' : 'Backend Degraded';
+        el.className = 'tag ' + (data.ollama_connected ? 'online' : '');
         document.getElementById('model-badge').innerText = data.primary_model || 'qwen2.5-coder:7b';
       } catch(e) {}
     }
@@ -169,16 +390,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const runs = await res.json();
         const listEl = document.getElementById('runs-list');
         if (!runs.length) {
-          listEl.innerHTML = '<p style="color: var(--text-muted); font-size: 12px;">No runs yet.</p>';
+          listEl.innerHTML = '<p style="color: var(--text-secondary); font-size: 11px;">No executions logged yet.</p>';
           return;
         }
         listEl.innerHTML = runs.map(r => `
-          <div class="run-item" onclick="loadRun('${r.run_id}')">
+          <div class="run-row" onclick="loadRun('${r.run_id}')">
             <div>
-              <div style="font-weight: 600; font-size: 13px;">${r.run_id}</div>
-              <div style="font-size: 11px; color: var(--text-muted);">${r.mtime}</div>
+              <div class="run-name">${r.run_id}</div>
+              <div class="run-meta">${r.mtime ? new Date(r.mtime * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}</div>
             </div>
-            <span class="badge ${r.status === 'PASS' ? 'badge-online' : 'badge-model'}">${r.status || 'DONE'}</span>
+            <span class="tag ${r.status === 'PASS' ? 'online' : ''}">${r.status || 'LOGGED'}</span>
           </div>
         `).join('');
       } catch(e) {}
@@ -197,14 +418,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const nodes = ['spec', 'arch', 'rtl', 'verif', 'script', 'eda', 'review', 'reflect'];
       nodes.forEach(n => {
         const el = document.getElementById(`node-${n}`);
-        el.className = 'agent-node pass';
-        el.querySelector('.status').innerText = 'PASS';
+        el.className = 'node pass';
+        el.querySelector('.state').innerText = 'PASS';
       });
     }
 
     function switchTab(tab) {
       activeTab = tab;
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
       event.target.classList.add('active');
       renderTab();
     }
@@ -215,11 +436,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         box.innerText = '// Select or execute a run to view collateral...';
         return;
       }
-      if (activeTab === 'rtl') box.innerText = activeRunData.rtl || '// No RTL code';
-      else if (activeTab === 'tb') box.innerText = activeRunData.testbench || '// No testbench code';
+      if (activeTab === 'rtl') box.innerText = activeRunData.rtl || '// No RTL code available';
+      else if (activeTab === 'tb') box.innerText = activeRunData.testbench || '// No testbench code available';
       else if (activeTab === 'arch') box.innerText = JSON.stringify(activeRunData.architecture || {}, null, 2);
       else if (activeTab === 'reqs') box.innerText = JSON.stringify(activeRunData.requirements || {}, null, 2);
-      else if (activeTab === 'reports') box.innerText = activeRunData.eda_reports || '// No EDA reports';
+      else if (activeTab === 'reports') box.innerText = activeRunData.eda_reports || '// No EDA logs available';
       else if (activeTab === 'review') box.innerText = JSON.stringify(activeRunData.review || {}, null, 2);
     }
 
@@ -241,11 +462,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     async function startGeneration() {
       const spec = document.getElementById('spec-text').value.trim();
-      if (!spec) return alert('Please enter a specification or select a preset!');
+      if (!spec) return alert('Enter a specification or select a preset.');
 
       const btn = document.getElementById('run-btn');
       btn.disabled = true;
-      btn.innerText = '⏳ Agents Designing & Verifying...';
+      btn.innerText = 'Executing Pipeline...';
 
       try {
         const res = await fetch('/api/runs', {
@@ -257,19 +478,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         await fetchRuns();
         if (result.run_id) await loadRun(result.run_id);
       } catch(e) {
-        alert('Generation failed: ' + e);
+        alert('Pipeline execution error: ' + e);
       } finally {
         btn.disabled = false;
-        btn.innerText = '⚡ Run Multi-Agent Closed Loop';
+        btn.innerText = 'Execute Generation & Verification';
       }
     }
 
     async function openWaveforms() {
-      if (!activeRunData || !activeRunData.run_id) return alert('Select a run first!');
+      if (!activeRunData || !activeRunData.run_id) return alert('Select an execution record first.');
       try {
         await fetch(`/api/runs/${activeRunData.run_id}/wave`, {method: 'POST'});
       } catch(e) {
-        alert('Failed to launch waveform viewer');
+        alert('Unable to launch GTKWave viewer');
       }
     }
 
